@@ -2,41 +2,37 @@
 library(car)
 library(emmeans)
 library(ggplot2)
-library(relaimpo)
-library(corrplot)
-install.packages("performance")
+library(ggpubr) 
+library(sandwich)
+library(lmtest)
+library(ggeffects)
 library(performance)
-# 1. Preparación de datos
+library(effects)
+
+# 1. Preparacion de datos
 data$tipo_industria <- factor(data$tipo_industria)
 
-# 2. Verificación de supuestos
-## a) Relación lineal
-ggplot(data, aes(inversion_extranjera, pib_crecimiento, color = tipo_industria)) +
-  geom_point(size = 3) +
-  geom_smooth(method = "lm", se = FALSE) +
-  labs(title = "Relación lineal entre IED y crecimiento del PIB",
-       x = "Inversión extranjera (millones USD)",
-       y = "Crecimiento del PIB (%)")
-
-## b) Homogeneidad de pendientes
+# 2. ancova con interaccion ----
 modelo_interaccion <- lm(pib_crecimiento ~ inversion_extranjera * tipo_industria, data = data)
-Anova(modelo_interaccion, type = "III")
 
-## c) Normalidad de residuos
+# 3. Verificacion de supuestos ancova novita (interacion) ----
+## a) Relación lineal 
+cat("\n\n=== Linealidad dog, ver imagen  ===\n")
+
+## b) Normalidad de residuos
 shapiro_test <- shapiro.test(residuals(modelo_interaccion))
-cat("\n--- TEST DE NORMALIDAD (Shapiro-Wilk) ---\n")
-cat("Estadístico W =", round(shapiro_test$statistic, 4), 
-    "| p-value =", format.pval(shapiro_test$p.value, digits = 3), "\n")
-if(shapiro_test$p.value > 0.05) cat("Conclusión: Residuos normales (p > 0.05)\n") else 
-  cat("Conclusión: Residuos NO normales (p ≤ 0.05)\n")
+cat("\n--- Salio normalito sengun Shapiro-Wilk? ---\n")
+cat("p-value =", format.pval(shapiro_test$p.value, digits = 3), "\n")
+if(shapiro_test$p.value > 0.05) cat("\nSimon: Residuos normales (p > 0.05)\n") else 
+  cat("Conclusion: Residuos nO normales (p ≤ 0.05)\n")
 
-# Método 2: QQ-plot mejorado
+# QQ-plot
 ggqqplot(residuals(modelo_interaccion), 
          title = "QQ-Plot de Residuos", 
          ylab = "Residuos", 
          ggtheme = theme_minimal())
 
-# Método 3: Test visual con histograma
+# test visual con histograma
 ggplot(data.frame(Residuos = residuals(modelo_interaccion)), aes(Residuos)) +
   geom_histogram(aes(y = ..density..), bins = 15, fill = "skyblue", color = "black") +
   geom_density(alpha = 0.2, fill = "red") +
@@ -46,103 +42,177 @@ ggplot(data.frame(Residuos = residuals(modelo_interaccion)), aes(Residuos)) +
   labs(title = "Distribución de Residuos", 
        subtitle = "Línea azul = distribución normal teórica") +
   theme_minimal()
-## d) Homocedasticidad
-levene_test <- leveneTest(pib_crecimiento ~ tipo_industria, data = data, center = mean)
-cat("\n--- TEST DE HOMOCEDASTICIDAD (Levene) ---\n")
+
+
+## c) Homocedasticidad (Levene)
+cat("\n--- test #nelson HOMOCEDASTICIDAD (Levene) ---\n")
+levene_test <- leveneTest(residuals(modelo_interaccion) ~ tipo_industria, data = data)
 print(levene_test)
 if(levene_test$`Pr(>F)`[1] > 0.05) cat("\nConclusión: Varianzas homogéneas (p > 0.05)\n") else 
-  cat("\nConclusión: Varianzas NO homogéneas (p ≤ 0.05)\n")
+  cat("\nConclusion de nelson: Varianzas NO homogeneas (p ≤ 0.05)\n")
 
-# Grafico de residuos vs valores ajustados
+# Gráfico de residuos vs valores ajustados
 plot(modelo_interaccion, which = 1, pch = 16, col = "blue",
-     main = "Residuos vs Valores Ajustados",
-     sub = "Línea roja debería ser plana")
+     main = "Residuos vs Valores Ajustados. Como lo interpretan?")
 
-## e) Multicolinealidad para que :V --------------------------------
-cat("\n\n=== DIAGNÓSTICO DE MULTICOLINEALIDAD ===\n")
+# d) Prueba de homogeneidad de pendientes con linearHypothesis()
+cat("\n--- Homogeneidad de pendientes con linearHypothesis() ---\n")
+test_inter <- linearHypothesis(
+  modelo_interaccion,
+  c("inversion_extranjera:tipo_industriaManufactura = 0",
+    "inversion_extranjera:tipo_industriaTecnologia = 0"),
+  white.adjust = "hc3"  # usa HC3 si quieres robustez a heterocedasticidad
+)
+print(test_inter)
 
-# Corrección: Convertir a vector numérico
-data$inv_centrada <- as.numeric(scale(data$inversion_extranjera, center = TRUE, scale = FALSE))
+pval <- test_inter$`Pr(>F)`[2]
 
-# Calcular VIF
-modelo_ancova_centrado <- lm(pib_crecimiento ~ inv_centrada + tipo_industria, data = data)
-vif_results <- vif(modelo_ancova_centrado)
-print("Factor de Inflación de Varianza (VIF):")
-print(vif_results)
-
-# Matriz de correlación (solo para variables numéricas)
-if(sum(sapply(data, is.numeric)) > 0) {
-  numericas <- data[, sapply(data, is.numeric), drop = FALSE]
-  cor_matrix <- cor(numericas, use = "complete.obs")
-  
-  # Visualizacion
-  corrplot(cor_matrix, method = "number", type = "upper", 
-           tl.col = "black", tl.srt = 45,
-           title = "Matriz de Correlación entre Variables Numéricas",
-           mar = c(0, 0, 2, 0))
+if (pval > 0.05) {
+  cat("\nConclusión: homogeneidad de pendientes (p =", format.pval(pval), "> 0.05)\n")
+} else {
+  cat("\nConclusión: NO homogeneidad de pendientes (p =", format.pval(pval), "≤ 0.05)\n")
 }
 
-# Analisis por grupo
-ggplot(data, aes(x = tipo_industria, y = inversion_extranjera, fill = tipo_industria)) +
-  geom_boxplot() +
-  labs(title = "Distribución de Inversión Extranjera por Sector",
-       x = "Tipo de Industria",
-       y = "Inversión Extranjera (millones USD)") +
-  theme_minimal()
+# 4. INFERENCIA ROBUSTA PARA EL MODELO DE INTERACCIÓN ----
+cat("\n\n=== ancovita con interacion ;V ===\n")
 
-# 3. ANCOVA uffff
-summary(modelo_ancova_centrado)
-Anova(modelo_ancova_centrado, type = "III")
+#Usamos errores robustos
+usar_robustos <- levene_test$`Pr(>F)`[1] < 0.05
 
-# 4. Medias ajustadas y comparaciones
-medias_ajustadas <- emmeans(modelo_ancova_centrado, pairwise ~ tipo_industria, adjust = "tukey")
-print(medias_ajustadas)
-
-# 5. resuldos en graficas dof¿g
-ggplot(as.data.frame(medias_ajustadas$emmeans), 
-       aes(tipo_industria, emmean, fill = tipo_industria)) +
-  geom_col(width = 0.7, alpha = 0.8) +
-  geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.2, linewidth = 1) +
-  labs(title = "Crecimiento económico por sector industrial",
-       subtitle = "Medias ajustadas controlando por inversión extranjera",
-       x = "Sector industrial",
-       y = "Crecimiento del PIB (%) ajustado") +
-  theme_minimal(base_size = 14) +
-  theme(legend.position = "none")
-
-# Graficos demas 
-if(requireNamespace("ggeffects", quietly = TRUE)) {
-  library(ggeffects)
+if(usar_robustos) {
+  cat("\n--- Usando errores HC3 para heterocedasticidad ---\n")
+  # Coeficientes con errores robustos
+  robust_test <- coeftest(modelo_interaccion, vcov = vcovHC(modelo_interaccion, type = "HC3"))
+  print(robust_test)
   
-  # Correcciones 
-  plot_data <- ggpredict(modelo_ancova_centrado, 
-                         terms = c("inv_centrada", "tipo_industria"))
-  
-  print(plot(plot_data) +
-          labs(title = "Efectos marginales de la inversión por sector",
-               x = "Inversión extranjera (centrada)",
-               y = "Crecimiento del PIB (%)",
-               color = "Tipo de Industria") +
-          theme_minimal())
+  # ancova robusta
+  cat("\n--- Anova con errores tipo Wald Test ---\n")
+  robust_anova <- waldtest(modelo_interaccion, vcov = vcovHC(modelo_interaccion, type = "HC3"))
+  print(robust_anova)
+} else {
+  cat("\n--- Ancova con interecciones ---\n")
+  print(summary(modelo_interaccion))
+  cat("\n--- Ancova tradicional ;C ---\n")
+  print(Anova(modelo_interaccion, type = "III"))
 }
 
-# Gráfico de comparaciones post-hoc ufff
-plot(medias_ajustadas, comparisons = TRUE) +
-  geom_point(size = 3) +
-  labs(title = "Comparación entre sectores industriales")
+# 5. grafico y comparacion de interaciones ----
+cat("\n\n=== Anisis de interaccion, entienden? print(nelson) ===\n")
 
-# 6. Analisis de importancia relativa
-cat("\n\n=== IMPORTANCIA RELATIVA DE PREDICTORES ===\n")
-imp <- calc.relimp(modelo_ancova_centrado, type = "lmg")
-print(imp)
+## a) grafico de interaccion 
+interaction_plot <- ggpredict(modelo_interaccion, 
+                              terms = c("inversion_extranjera", "tipo_industria"))
 
-# Grafico de importancia
-if(!is.null(imp$lmg)) {
-  barplot(sort(imp$lmg, decreasing = TRUE), 
-          names.arg = names(sort(imp$lmg, decreasing = TRUE)),
-          col = "skyblue",
-          main = "Importancia Relativa de Predictores",
-          ylab = "Porcentaje de Varianza Explicada",
-          ylim = c(0, 1))
+print(plot(interaction_plot) +
+        labs(title = "Interaccion entre Inversion Extranjera y Tipo de Industria",
+             subtitle = "Efecto en el Crecimiento del PIB",
+             x = "Inversion Extranjera (millones USD)",
+             y = "Crecimiento del PIB (%)",
+             color = "Tipo de Industria") +
+        theme_minimal())
+
+## b) Comparacion de pendientes durisima
+if(usar_robustos) {
+  cat("\n--- HC3 en cada pendiente ---\n")
+  pendientes <- emtrends(modelo_interaccion, 
+                         specs = pairwise ~ tipo_industria, 
+                         var = "inversion_extranjera",
+                         vcov. = vcovHC(modelo_interaccion, type = "HC3"))
+} else {
+  cat("\n--- pendientes con errores estanderes ---\n")
+  pendientes <- emtrends(modelo_interaccion, 
+                         specs = pairwise ~ tipo_industria, 
+                         var = "inversion_extranjera")
 }
+
+cat("\n--- medias ajustadas ---\n")
+print(pendientes$emtrends)
+
+cat("\n--- Comparaciones por pares con corrección Tukey ---\n")
+print(pendientes$contrasts)
+
+## c) Grafico de pendientes
+pendientes_df <- as.data.frame(pendientes$emtrends)
+
+
+# cambios de nombres
+names(pendientes_df)[names(pendientes_df) == "inversion_extranjera.trend"] <- "pendiente"
+
+print(
+  ggplot(pendientes_df, aes(x = tipo_industria, y = pendiente)) +
+    geom_point(size = 4, color = "blue") +
+    geom_errorbar(aes(ymin = lower.CL, ymax = upper.CL), width = 0.2, linewidth = 1, color = "blue") +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    labs(title = "Pendientes de Inversión por Tipo de Industria",
+         subtitle = "Efecto de 1 millón USD en crecimiento del PIB",
+         x = "Tipo de Industria",
+         y = "Pendiente (Cambio en % del PIB)") +
+    theme_minimal() +
+    theme(axis.text.x = element_text(angle = 45, hjust = 1))
+)
+
+
+## d) Efectos simples
+cat("\n--- efecto simple por industria ---\n")
+puntos_inversion <- c(
+  min(data$inversion_extranjera),
+  mean(data$inversion_extranjera),
+  max(data$inversion_extranjera)
+)
+
+simple_effects <- emmeans(modelo_interaccion, 
+                          specs = ~ inversion_extranjera | tipo_industria,
+                          at = list(inversion_extranjera = puntos_inversion))
+
+print(simple_effects)
+
+
+
+# 6. importancia de interacion ----
+cat("\n\n=== Fue importante usar interacciones? ;´v ===\n")
+
+# contriducion unica de interaccion
+modelo_sin_interaccion <- lm(pib_crecimiento ~ inversion_extranjera + tipo_industria, data = data)
+anova_comparacion <- anova(modelo_sin_interaccion, modelo_interaccion)
+
+cat("\n--- Comparemos ---\n")
+print(anova_comparacion)
+
+# R-cuadrado incremental
+r2_full <- summary(modelo_interaccion)$r.squared
+r2_reduced <- summary(modelo_sin_interaccion)$r.squared
+incremental_r2 <- r2_full - r2_reduced
+
+cat("\nR² ancovita con interacciones:", round(r2_full, 4))
+cat("\nR² sin ;C:", round(r2_reduced, 4))
+cat("\nR² incremental por interacción:", round(incremental_r2, 4))
+cat("\nPorcentaje de varianza explicada por interacción:", round(incremental_r2*100, 2), "%\n")
+
+# 7. grafico en 3d nelson ----
+if(requireNamespace("plotly", quietly = TRUE)) {
+  library(plotly)
+  
+  grid <- expand.grid(
+    inversion_extranjera = seq(min(data$inversion_extranjera), 
+                               max(data$inversion_extranjera), 
+                               length.out = 30),
+    tipo_industria = levels(data$tipo_industria)
+  )
+  grid$pred <- predict(modelo_interaccion, newdata = grid)
+  
+  plot_3d <- plot_ly(grid, x = ~inversion_extranjera, y = ~tipo_industria, z = ~pred,
+                     type = "scatter3d", mode = "lines",
+                     color = ~tipo_industria, colors = "Set1") %>%
+    layout(scene = list(
+      xaxis = list(title = "Inversión Extranjera"),
+      yaxis = list(title = "Tipo de Industria"),
+      zaxis = list(title = "Crecimiento PIB Predicho")
+    ), title = "Superficie de Interacción 3D")
+  
+  print(plot_3d)
+} else {
+  cat("\nInstala el paquete 'plotly' para visualización 3D: install.packages('plotly')\n")
+}
+
+
 
